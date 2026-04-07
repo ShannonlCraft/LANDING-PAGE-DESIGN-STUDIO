@@ -1176,18 +1176,22 @@ function updateVideo(){
   }
 }
 var _lastBlobUrl = null;
+var _lastVideoFile = null;
+var _lastImgFile = null;
 function _revokeLast(){ if(_lastBlobUrl){ try{URL.revokeObjectURL(_lastBlobUrl);}catch(e){} _lastBlobUrl=null; } }
 function loadLocal(input){
   if(!input.files||!input.files[0]) return;
   _revokeLast();
-  var url = URL.createObjectURL(input.files[0]);
+  _lastVideoFile = input.files[0];
+  var url = URL.createObjectURL(_lastVideoFile);
   _lastBlobUrl = url;
   E('p-video-inner').innerHTML = '<video src="'+url+'" controls style="width:100%;height:100%;object-fit:cover;display:block;"></video>';
 }
 function loadImgLocal(input){
   if(!input.files||!input.files[0]) return;
   _revokeLast();
-  var url = URL.createObjectURL(input.files[0]);
+  _lastImgFile = input.files[0];
+  var url = URL.createObjectURL(_lastImgFile);
   _lastBlobUrl = url;
   var alt = esc((E('v-img-alt') && E('v-img-alt').value.trim()) || '');
   E('p-video-inner').innerHTML = '<img src="'+url+'" alt="'+alt+'" style="width:100%;height:100%;object-fit:cover;display:block;">';
@@ -1209,7 +1213,7 @@ function playYT(id){
   // - playsinline=1 (stays inline on mobile)
   // - color=white (hides red progress bar accent)
   // - disablekb=1 (cleaner, no keyboard hotkey overlay)
-  var src = 'https://www.youtube-nocookie.com/embed/'+id+'?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&playsinline=1&color=white&disablekb=1';
+  var src = 'https://www.youtube.com/embed/'+id+'?autoplay=1&rel=0&playsinline=1';
   inner.innerHTML = '<iframe src="'+src+'" title="Video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen style="width:100%;height:100%;display:block;border:0;"></iframe>';
 }
 
@@ -2418,25 +2422,26 @@ document.addEventListener('click', function(e){
 });
 
 // ── EXPORT ──
-function _blobToDataURL(blobUrl){
-  return fetch(blobUrl).then(function(r){return r.blob();}).then(function(b){
-    return new Promise(function(res,rej){
-      var fr = new FileReader();
-      fr.onload = function(){ res(fr.result); };
-      fr.onerror = rej;
-      fr.readAsDataURL(b);
-    });
+var MAX_EMBED_BYTES = 25 * 1024 * 1024; // 25 MB cap for inlining local files
+function _fileToDataURL(file){
+  return new Promise(function(res,rej){
+    var fr = new FileReader();
+    fr.onload = function(){ res(fr.result); };
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
   });
 }
 async function exportPage(){
-  // ── Swap any blob: URLs (local uploads) to base64 data URLs so the export is self-contained ──
-  var _videoRestore = null, _imgRestore = null;
-  try {
-    var vEl = E('p-video-inner') && E('p-video-inner').querySelector('video[src^="blob:"]');
-    if(vEl){ var orig = vEl.getAttribute('src'); var d = await _blobToDataURL(orig); _videoRestore = {el:vEl, src:orig}; vEl.setAttribute('src', d); }
-    var iEl = E('p-video-inner') && E('p-video-inner').querySelector('img[src^="blob:"]');
-    if(iEl){ var origI = iEl.getAttribute('src'); var dI = await _blobToDataURL(origI); _imgRestore = {el:iEl, src:origI}; iEl.setAttribute('src', dI); }
-  } catch(e){ showToast('Could not embed local file — try a hosted URL'); }
+  // ── Embed local uploads as data URLs (small files only) ──
+  var embeddedVideo = null, embeddedImg = null;
+  if(_lastVideoFile && _lastVideoFile.size <= MAX_EMBED_BYTES){
+    try{ embeddedVideo = await _fileToDataURL(_lastVideoFile); }catch(e){}
+  } else if(_lastVideoFile){
+    try{ showToast('Video too large to embed ('+Math.round(_lastVideoFile.size/1048576)+' MB). Use a hosted URL.'); }catch(e){}
+  }
+  if(_lastImgFile && _lastImgFile.size <= MAX_EMBED_BYTES){
+    try{ embeddedImg = await _fileToDataURL(_lastImgFile); }catch(e){}
+  }
   // ── CSS variables ──
   var cs   = getComputedStyle(document.documentElement);
   var vars = ['--orange','--orange2','--black','--dark','--card','--card2','--white','--muted','--muted2','--border'];
@@ -2462,6 +2467,20 @@ async function exportPage(){
 
   // ── Page HTML — grab live DOM so all edits and custom sections are included ──
   var pageHTML = E('pw').innerHTML;
+
+  // Replace blob: URLs with either the embedded data URL (if small enough) or a warning placeholder.
+  pageHTML = pageHTML.replace(/<video([^>]*)src="blob:[^"]*"([^>]*)>[\s\S]*?<\/video>/gi, function(m,pre,post){
+    if(embeddedVideo){
+      return '<video'+pre+'src="'+embeddedVideo+'"'+post+'></video>';
+    }
+    return '<div class="video-placeholder" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:#000;color:#fff;font-family:Inter,sans-serif;"><div style="text-align:center;padding:24px;"><div style="font-size:40px;margin-bottom:8px;">⚠️</div><div>Video too large to embed.<br>Host your .mp4 and use "Paste Hosted Video URL".</div></div></div>';
+  });
+  pageHTML = pageHTML.replace(/<img([^>]*)src="blob:[^"]*"([^>]*)>/gi, function(m,pre,post){
+    if(embeddedImg){
+      return '<img'+pre+'src="'+embeddedImg+'"'+post+'>';
+    }
+    return '<div class="video-placeholder" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:#000;color:#fff;font-family:Inter,sans-serif;"><div style="text-align:center;padding:24px;"><div style="font-size:40px;margin-bottom:8px;">⚠️</div><div>Image too large to embed.<br>Host the image and paste its URL.</div></div></div>';
+  });
 
   var title = document.title || (E('p-nav-name') ? E('p-nav-name').textContent : 'Landing Page');
 
@@ -2505,10 +2524,6 @@ async function exportPage(){
     +   '});'
     + '});\n'
     + '<\/script>\n</body>\n</html>';
-
-  // Restore blob URLs in the live editor preview so playback keeps working
-  if(_videoRestore) _videoRestore.el.setAttribute('src', _videoRestore.src);
-  if(_imgRestore) _imgRestore.el.setAttribute('src', _imgRestore.src);
 
   var blob = new Blob([out],{type:'text/html'});
   var a = document.createElement('a');
