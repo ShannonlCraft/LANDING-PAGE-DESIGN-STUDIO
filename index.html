@@ -208,6 +208,14 @@ nav{position:fixed;top:0;left:0;right:0;z-index:200;background:rgba(10,10,10,.88
 .video-inner iframe,.video-inner video{width:100%;height:100%;border:none;display:block;}
 .video-placeholder{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--muted);background:#0e0e0e;}
 .play-btn{width:68px;height:68px;border-radius:50%;border:2px solid rgba(249,115,22,.6);display:flex;align-items:center;justify-content:center;color:var(--orange);font-size:24px;}
+.yt-facade{position:relative;width:100%;height:100%;cursor:pointer;overflow:hidden;background:#000;outline:none;}
+.yt-facade:focus-visible{box-shadow:0 0 0 3px rgba(249,115,22,.6);}
+.yt-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s ease, filter .3s ease;}
+.yt-facade:hover .yt-poster{transform:scale(1.03);filter:brightness(.85);}
+.yt-play-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,rgba(0,0,0,0) 40%,rgba(0,0,0,.35) 100%);transition:background .3s ease;}
+.yt-facade:hover .yt-play-overlay{background:linear-gradient(180deg,rgba(0,0,0,.1) 0%,rgba(0,0,0,.45) 100%);}
+.yt-play-overlay .play-btn{width:88px;height:88px;font-size:32px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);border:2px solid rgba(249,115,22,.9);color:#fff;box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 24px rgba(249,115,22,.35);transition:transform .25s ease, box-shadow .25s ease, background .25s ease;}
+.yt-facade:hover .yt-play-overlay .play-btn{transform:scale(1.08);background:rgba(249,115,22,.9);box-shadow:0 10px 40px rgba(0,0,0,.6),0 0 36px rgba(249,115,22,.6);}
 .video-placeholder span{font-size:13px;color:var(--muted);letter-spacing:.5px;}
 .hero-quote-wrap{max-width:680px;margin:72px auto 0;position:relative;}
 .hero-quote-wrap::before{content:'\201C';position:absolute;top:-24px;left:36px;font-size:64px;font-weight:900;color:var(--orange);line-height:1;font-family:Georgia,serif;}
@@ -1136,7 +1144,15 @@ function updateVideo(){
     var url = E('v-yt-url').value.trim();
     var id  = getYTId(url);
     if(id){
-      inner.innerHTML = '<iframe src="https://www.youtube.com/embed/'+id+'" frameborder="0" allowfullscreen style="width:100%;height:100%;display:block;"></iframe>';
+      // Clean facade: custom poster (YouTube thumbnail) + clean play button.
+      // On click, loads the iframe with cleanest possible params and autoplays.
+      var poster = 'https://i.ytimg.com/vi/'+id+'/maxresdefault.jpg';
+      var fallback = 'https://i.ytimg.com/vi/'+id+'/hqdefault.jpg';
+      inner.innerHTML =
+        '<div class="yt-facade" onclick="playYT(\''+id+'\')" role="button" aria-label="Play video" tabindex="0" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();playYT(\''+id+'\');}">'+
+          '<img src="'+poster+'" onerror="this.onerror=null;this.src=\''+fallback+'\';" alt="Play video" class="yt-poster">'+
+          '<div class="yt-play-overlay"><div class="play-btn">▶</div></div>'+
+        '</div>';
     } else {
       inner.innerHTML = '<div class="video-placeholder"><div class="play-btn">▶</div><span>Paste a YouTube URL above →</span></div>';
     }
@@ -1180,6 +1196,21 @@ function getYTId(url){
   if(!url) return null;
   var m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
+}
+function playYT(id){
+  var inner = E('p-video-inner');
+  if(!inner) return;
+  // Cleanest possible YouTube embed:
+  // - youtube-nocookie.com (privacy)
+  // - autoplay=1 (starts on click)
+  // - rel=0 (no related videos from other channels at end)
+  // - modestbranding=1 (reduces YT branding where possible)
+  // - iv_load_policy=3 (hides annotations)
+  // - playsinline=1 (stays inline on mobile)
+  // - color=white (hides red progress bar accent)
+  // - disablekb=1 (cleaner, no keyboard hotkey overlay)
+  var src = 'https://www.youtube-nocookie.com/embed/'+id+'?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&playsinline=1&color=white&disablekb=1';
+  inner.innerHTML = '<iframe src="'+src+'" title="Video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen style="width:100%;height:100%;display:block;border:0;"></iframe>';
 }
 
 // ── WEEK DATA ──
@@ -2387,7 +2418,25 @@ document.addEventListener('click', function(e){
 });
 
 // ── EXPORT ──
-function exportPage(){
+function _blobToDataURL(blobUrl){
+  return fetch(blobUrl).then(function(r){return r.blob();}).then(function(b){
+    return new Promise(function(res,rej){
+      var fr = new FileReader();
+      fr.onload = function(){ res(fr.result); };
+      fr.onerror = rej;
+      fr.readAsDataURL(b);
+    });
+  });
+}
+async function exportPage(){
+  // ── Swap any blob: URLs (local uploads) to base64 data URLs so the export is self-contained ──
+  var _videoRestore = null, _imgRestore = null;
+  try {
+    var vEl = E('p-video-inner') && E('p-video-inner').querySelector('video[src^="blob:"]');
+    if(vEl){ var orig = vEl.getAttribute('src'); var d = await _blobToDataURL(orig); _videoRestore = {el:vEl, src:orig}; vEl.setAttribute('src', d); }
+    var iEl = E('p-video-inner') && E('p-video-inner').querySelector('img[src^="blob:"]');
+    if(iEl){ var origI = iEl.getAttribute('src'); var dI = await _blobToDataURL(origI); _imgRestore = {el:iEl, src:origI}; iEl.setAttribute('src', dI); }
+  } catch(e){ showToast('Could not embed local file — try a hosted URL'); }
   // ── CSS variables ──
   var cs   = getComputedStyle(document.documentElement);
   var vars = ['--orange','--orange2','--black','--dark','--card','--card2','--white','--muted','--muted2','--border'];
@@ -2442,6 +2491,11 @@ function exportPage(){
     + pageHTML
     + '\n<script>\n'
     + 'function toggleFaq(el){el.parentElement.classList.toggle("open");}\n'
+    + 'function playYT(id){'
+    +   'var w=document.getElementById("p-video-inner");if(!w)return;'
+    +   'var src="https://www.youtube-nocookie.com/embed/"+id+"?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&playsinline=1&color=white&disablekb=1";'
+    +   'w.innerHTML=\'<iframe src="\'+src+\'" title="Video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen style="width:100%;height:100%;display:block;border:0;"></iframe>\';'
+    + '}\n'
     + 'document.querySelectorAll(\'a[href^="#"]\').forEach(function(a){'
     +   'a.addEventListener("click",function(e){'
     +     'var id=a.getAttribute("href");'
@@ -2452,10 +2506,17 @@ function exportPage(){
     + '});\n'
     + '<\/script>\n</body>\n</html>';
 
+  // Restore blob URLs in the live editor preview so playback keeps working
+  if(_videoRestore) _videoRestore.el.setAttribute('src', _videoRestore.src);
+  if(_imgRestore) _imgRestore.el.setAttribute('src', _imgRestore.src);
+
   var blob = new Blob([out],{type:'text/html'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'called-and-clear-landing-page.html';
+  var brandEl = E('brand-name-input');
+  var brandVal = (brandEl && brandEl.value ? brandEl.value : 'landing-page').trim();
+  var safeBrand = brandVal.toLowerCase().replace(/&/g,'and').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'landing-page';
+  a.download = safeBrand + '-landing-page.html';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
